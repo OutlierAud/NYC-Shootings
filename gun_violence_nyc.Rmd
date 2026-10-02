@@ -1,0 +1,708 @@
+---
+title: "The Geography Of Gun Violence In New York City"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+
+```
+
+# A 19-year Study Of The Spatial Distribution of Shooting Incidents in NYC
+
+#### Spatial Analysis + Statistical Modeling of Shooting Incidents in NYC
+
+------------------------------------------------------------------------
+
+## Research Question
+
+> **How does the frequency of shooting incidents in New York City (NYC) vary across the city?**
+>
+> The analysis on NYC's historical shooting incidents will examine geographic variation across **boroughs, precincts, and lat/lon coordinates**.
+>
+> We hope to identify the **hotspots** in the city based on a 19-year historical dataset compiled by the New York Police Department (NYPD). A descriptive **statistical model** will then summarise the pattern of shooting incidents across the city over these 19 years.
+
+------------------------------------------------------------------------
+
+## **Scope of Analysis**
+
+**How The Data Will Support the Project**
+
+The NYPD Shooting Incident dataset provides information about individual shooting incidents, including:
+
+- date and time of occurrence
+- borough and precinct
+- latitude and longitude
+- victim and perpetrator characteristics
+- incident characteristics.
+
+The data will be transformed and aggregated as required by the analysis. For example, when examining changes in shooting activity, we will aggregate incidents by geographic area and time period to help us identify any patterns or persistence in patterns.
+
+Variables will be selected based on their relevance to the research question and the completeness and validity of the variables will also be considered.
+
+### **The Analytical Approach**
+
+1.  Spatial Analysis:
+    - Geographical visualisation showing the distribution of shooting incidents to identify potential geospatial patterns or trends, and hotspot identification through coordinate mappings.
+2.  Statistical Modeling:
+    - The model will produce a smoothed representation of shooting activity, with observed incidents plotted alongside the fitted curve, to illustrate the shape of the distribution. (\*Note: Statistical inference is out of the scope of this study.)
+3.  Conclusion: The project will conclude with a summary of the main findings, potential biases, references and citations.
+
+### **Data Limitation: Raw Counts vs. Per‑Capita Rates**
+
+***This project uses raw shooting counts, rather than per-capita or area -adjusted measures.*** ***The NYPD dataset does not include population or geographic size data for boroughs or precincts.***
+
+As a result, the findings reflect the total volume of shootings rather than the relative risk to residents in a given area. A borough with a larger population will naturally have higher raw counts, while a smaller borough will have lower raw counts, regardless of the per‑capita rate. The spatial findings should therefore be viewed with this limitation in mind. This limitation is mentioned again in the bias section.
+
+------------------------------------------------------------------------
+
+## More About The Data Set
+
+This project uses the **ARCHIVED_NYPD Shooting Incident Data (Historic)** dataset. It is a public dataset published by the New York City Police Department (NYPD).
+
+The dataset contains the following information:
+
+- Records of shooting incidents that occurred in NYC
+
+- Records are dated from 2006 to the previous calendar year
+
+- Each record includes the following information about the event:
+
+  1.  the location and time of occurrence,
+
+  2.  suspect related information, and
+
+  3.  victim demographics.
+
+The published data was manually extracted on a quarterly basis and reviewed by the Office of Management Analysis and Planning before being published online on the NYPD website.
+
+**Dataset Name:** ARCHIVED_NYPD Shooting Incident Data (Historic)
+
+**Dataset download link** and more details about it can be found here: <https://data.cityofnewyork.us/Public-Safety/ARCHIVED_NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data>
+
+------------------------------------------------------------------------
+
+# 1. Reproducibility
+
+For reproducibility, the CSV file is directly imported into this document through the published download URL on the NYPD website:
+
+```{r load_data,warning=FALSE}
+url_in <- "https://data.cityofnewyork.us/api/v3/views/833y-fsy8/export.csv?accessType=DOWNLOAD"
+
+shootings <- read_csv(url_in)
+```
+
+------------------------------------------------------------------------
+
+### Verify & Explore The Dataset
+
+Here, we will check that the dataset loaded successfully and also take a look at the kind of information this dataset holds:
+
+```{r dataset_initial_check}
+shootings #display the dataset
+dim(shootings) #inspect dimensions
+glimpse(shootings) #inspect structure
+```
+
+------------------------------------------------------------------------
+
+# 2. Tidy And Transform The Data
+
+**Objective**: Get the dataset ready for analysis
+
+We will summarise and process the data in the following ways:
+
+1.  **Review the data structure and completeness** Examine data structure and summary statistics of the dataset, including a dataset completeness check (identify and quantify missing values)
+
+2.  **Review and standardise column types** Check that data types are appropriate and convert variables to appropriate data types where necessary
+
+3.  **Check data validity and integrity** Identify invalid entries (e.g out of range for age), duplicate records, inconsistency in categorical values, and logical inconsistencies between related variables
+
+4.  **Select only relevant variables and document how missing values are handled** Keep relevant columns related to the project analysis and modeling and drop unnecessary or excessively incomplete columns if needed. Evaluate the extent and potential implications of missing data, and document how to handle the missing values in the analysis and modeling stages.
+
+------------------------------------------------------------------------
+
+## Step 2.1: Review the data structure and completeness
+
+**Data Structure & Summary Statistic**
+
+Running `summary(shootings)` returned an error in `as.character()`. This indicated a possible type conversion issue. Because `OCCUR_TIME` is a `hms` num object data type, it was identified as a possible source of the error. Running`summary(shootings$OCCUR_TIME)` subsequently confirmed `OCCUR_TIME` as the source of the error.
+
+Since `hms` is an appropriate data type for the column `OCCUR_TIME`, the column data type will not be converted at this stage. Rather, it will be excluded in the summary statistics and independently checked for missing values and validity.
+
+```{r check_OCCUR_TIME_conversion}
+#exclude OCCUR_TIME from summary stats
+summary(shootings %>%
+          dplyr::select(-OCCUR_TIME)
+)
+
+range(shootings$OCCUR_TIME, na.rm=TRUE) #view range of OCCUR_TIME column
+sum(is.na(shootings$OCCUR_TIME)) #count NULL values in OCCUR_TIME column
+```
+
+**Completeness Check**
+
+The column `OCCUR_TIME` was independently checked for missing values and none was found. `Summary()` returned several columns with missing values. We will focus on checking the missing values in this section.
+
+```{r check_missing_values}
+missing_summary <- data.frame(
+  No_missing = colSums(is.na(shootings)),
+  Percent_missing = round(
+    colSums(is.na(shootings)) / nrow(shootings) * 100, 
+    2
+  )
+) %>%
+  arrange(desc(Percent_missing))
+
+missing_summary
+```
+
+------------------------------------------------------------------------
+
+## Step 2.2: Review and Standardise column types
+
+We now need to check column data types, assess appropriateness and convert unsuitable variable data types if necessary.
+
+Referring back to `glimpse(shootings)` which gave us an overview of the data types and values, these are the operations we need to perform on the data:
+
+- Convert `OCCUR_DATE` from `chr` to `mdy` data type
+
+- Convert `BORO` from `chr` to `factor` variable. Boroughs should be treated as a categorical group for better control during the visualisation stage.
+
+```{r column_type_conversion}
+shootings <- shootings %>%
+  mutate(
+    OCCUR_DATE = lubridate::mdy(OCCUR_DATE), #convert OCCUR_DATE to dmy data type
+    BORO = as.factor(BORO) #convert BORO to factor variable
+  )
+
+#verify type conversions were successful
+class(shootings$OCCUR_DATE)
+class(shootings$BORO)
+```
+
+------------------------------------------------------------------------
+
+## Step 2.3: Check Data Validity & Integrity
+
+Next, verify column ranges for validity and integrity. The summary of findings for 2.3 follows below.
+
+```{r data validity and integrity check}
+cat("Date range in OCCUR_DATE validity check: ") #validate date range in dataset
+print(range(shootings$OCCUR_DATE, na.rm=TRUE))
+cat("\nDistinct INCIDENT_KEY as unique indentifier integrity check\n")
+cat("------------------------------------------")
+cat("\nTotal no. of records: ", nrow(shootings))
+cat("\nTotal no. of unique INCIDENT_KEY values: ", n_distinct(shootings$INCIDENT_KEY))
+
+# Duplicate incident keys were found.
+# Check if rows are full duplicates
+fully_duplicate_rows <- sum(duplicated(shootings))
+cat("\nNumber of fully duplicate rows (all columns identical):", fully_duplicate_rows, "\n")
+
+# Duplicates are not full duplicates. Investigate further
+# Check duplicate INCIDENT_KEY examples
+# Find keys that appear more than once
+dup_keys <- shootings %>%
+  group_by(INCIDENT_KEY) %>%
+  summarise(n = n()) %>%
+  filter(n > 1) %>%
+  pull(INCIDENT_KEY)
+
+# Take the first 2 duplicate keys and view them
+shootings %>%
+  filter(INCIDENT_KEY %in% dup_keys[1:2]) %>%
+  arrange(INCIDENT_KEY) %>%
+  dplyr::select(INCIDENT_KEY, OCCUR_DATE, BORO, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, everything())
+
+
+```
+
+### Summary of data validity and integrity check:
+
+✅ Date range spans from 2006-01-01 to 2024-12-31
+
+⚠️ `INCIDENT_KEY` is a unique shooting event identifier. There are 29744 rows in the dataset, but only 23298 are unique `INCIDENT_KEY` values. Further checks confirm that the duplicate rows are shooting incidents involving more than 1 victim, with each victim's details recorded as its own row in the dataset. The dataset is therefore structured at the **victim level** and in further analysis, we must count `DISTINCT INCIDENT_KEY` values rather than total rows when analysing with shooting counts.
+
+------------------------------------------------------------------------
+
+## Step 2.4: Select Only Relevant Variables
+
+Referring back to the research question, these are the variables that will be retained for the analysis and modeling based on data relevancy and completeness:
+
+| COLUMN NAME | RELEVANCY | COMPLETENESS | HANDLING |
+|------------------|------------------|------------------|------------------|
+| `INCIDENT_KEY` | Shooting record indentifier | 100% | Keep As Is |
+| `OCCUR_DATE` | Study Period (Date) | 100% | Keep As Is |
+| `BORO` | Spatial Analysis (Borough) | 100% | Keep As Is |
+| `PRECINCT` | Spatial Analysis (Precinct) | 100% | Keep As Is |
+| `Latitude` | Spatial Analysis (Mapping) | 99.67% | Drop rows with missing values |
+| `Longitude` | Spatial Analysis (Mapping) | 99.67% | Drop rows with missing values |
+
+All other columns (e.g. occur_time, victim demographics, perpertrator details, description of locations, jurisdiction code, coordinate codes and murder flag) were dropped as they are not relevant to the spatial analysis. `Lat_Lon` was also dropped because its data type is `char` and would complicate mapping, whilst `Latitude` and `Longitude` are `numeric` and is sufficient to serve mapping needs.
+
+**Naming Conventions: Rename columns to lowercase, snake_case** To keep with a consistent naming convention, all column names in the processed dataset will be renamed using the R naming convention of lowercase, snake_case. Consistent naming will keep the code clean and easier to maintain.
+
+**Handling of Missing Values** Notably, `Latitude` and `Longitude` both have 97 missing values (0.33% of the dataset). As the number of rows with missing data make up less than 0.5% of the entire dataset, the rows can be safely dropped without any significant impact on the results of the analysis and modeling.
+
+```{r process dataset for analysis and modeling}
+shootings_processed <- shootings %>%
+  # keep only columns below
+  dplyr::select(
+    INCIDENT_KEY,
+    OCCUR_DATE,
+    BORO,
+    PRECINCT,
+    Latitude,
+    Longitude
+  ) %>%
+  
+  # drop rows with missing latitude and longitude
+  filter(
+    !is.na(Latitude),
+    !is.na(Longitude)
+  ) %>%
+  
+  # rename all columns to lowercase snake_case
+  rename(
+    incident_key = INCIDENT_KEY,
+    occur_date = OCCUR_DATE,
+    boro = BORO,
+    precinct = PRECINCT,
+    latitude = Latitude,
+    longitude = Longitude
+  )
+
+# Verify final processed dataset
+cat("No. of records in the processed dataset: ", nrow(shootings_processed))
+cat("\nMissing values in the dataset: ", sum(is.na(shootings_processed)))
+
+#preview columns and first 10 rows
+head(shootings_processed, 10)
+
+```
+
+------------------------------------------------------------------------
+
+# 3. Spatial Analysis - Where Do Shootings Occur?
+
+Now that the data is ready, we can start the spatial analysis. \*\*
+
+Where\*\* do shootings occur, **how many** shootings occurred **in each location**, and can we identify any **patterns** or **hotspots**? To find out, we will analyse the following spatial categories:
+
+- **Borough** (broadest geographic unit),
+
+- **Precinct** (specific neighbourhoods within boroughs),
+
+- **Latitude and longitude** (to identify precise hotspots).
+
+------------------------------------------------------------------------
+
+### Step 3.1: An Overview
+
+Let's start with an overview of how incidents are distributed across boroughs and precincts
+
+| Analysis (19-Year Totals) | Visualisation | Purpose |
+|:-----------------------|:-----------------------|:-----------------------|
+| Summary Statistics | None | Overview of spatial distribution |
+| Shootings by borough | Bar chart | Which borough has the most shootings? |
+| Shootings by precinct | Bar chart | How do incident counts vary among the precincts? |
+
+```{r geospatial overview}
+#--------------------------------------
+# SUMMARY STATISTICS
+#--------------------------------------
+
+shootings_processed %>%
+  group_by(boro) %>%
+  summarise(incident_total = n_distinct(incident_key)) %>%
+  {
+    cat("SUMMARY STATISTICS (19 Year Totals)\n")
+    cat("==============================\n")
+    cat("Total Boroughs: ", nrow(.), "\n")
+    cat("Mean: ", mean(.$incident_total), "\n")
+    cat("Median: ", median(.$incident_total), "\n")
+    cat("Minimum: ", min(.$incident_total), "\n")
+    cat("Maximum: ", max(.$incident_total), "\n")
+    
+    invisible(NULL)
+  }
+
+shootings_processed %>%
+  group_by(precinct) %>%
+  summarise(incident_total = n_distinct(incident_key)) %>%
+  {
+    cat("\n\nTotal Precincts: ", nrow(.), "\n")
+    cat("Mean: ", mean(.$incident_total), "\n")
+    cat("Median: ", median(.$incident_total), "\n")
+    cat("Minimum: ", min(.$incident_total), "\n")
+    cat("Maximum: ", max(.$incident_total), "\n")
+    cat("==============================\n")
+    
+    invisible(NULL)
+  }
+
+#--------------------------------------
+# BAR CHART - SHOOTINGS BY BOROUGH 
+#--------------------------------------
+
+borough_stats <- shootings_processed %>%
+  group_by(boro) %>%
+  summarise(incident_total = n_distinct(incident_key)) %>%
+  arrange(desc(incident_total))
+
+ggplot(borough_stats, aes(x = reorder(boro, -incident_total), y = incident_total)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  geom_text(aes(label = incident_total), vjust = -0.4, size = 3.5) +
+  labs(
+    title = "NYC Shooting Incidents by Borough (2006–2024)",
+    x = "Borough",
+    y = "No. of Incidents"
+  ) +
+  ylim(0, max(borough_stats$incident_total) * 1.1) +
+  theme_minimal()
+
+#--------------------------------------
+# SHOOTINGS BY PRECINCT
+#--------------------------------------
+precinct_stats <- shootings_processed %>%
+  group_by(precinct) %>%
+  summarise(
+    incident_total = n_distinct(incident_key),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(incident_total))
+
+
+#--------------------------------------
+# BAR CHART
+#--------------------------------------
+ggplot(
+  precinct_stats,
+  aes(
+    x = reorder(factor(precinct), incident_total),
+    y = incident_total
+  )
+) +
+  geom_col(fill = "darkred", alpha = 0.8) +
+  coord_flip() +
+  labs(
+    title = "Shooting Incidents by NYC Precinct (2006–2024)",
+    x = "Precinct",
+    y = "No. of Incidents"
+  ) +
+  theme_minimal()+
+  theme(
+    axis.text.y = element_blank()
+  )
+
+
+```
+
+Shooting counts aggregated by boroughs and precincts display a wide range in the number of incidents. Shootings are clearly not evenly distributed across the city.
+
+### Step 3.2: Yearly Patterns
+
+**Next, let's take a look at yearly patterns:**
+
+| Analysis | Visualisation | Purpose |
+|:-----------------------|:-----------------------|:-----------------------|
+| Borough × Year | Line Chart | How have borough patterns changed over time? |
+| Top 5 Precincts x Year | Line Chart | How have counts of the top 5 precincts (based on 19-year totals) changed over time? |
+
+```{r borough and precincts counts by year}
+
+#--------------------------------------
+# SHOOTINGS BY BOROUGH × YEAR
+#--------------------------------------
+borough_year_stats <- shootings_processed %>%
+  mutate(
+    occur_date = ymd(occur_date),
+    year = year(occur_date)
+  )%>%
+  group_by(boro, year) %>%
+  summarise(incident_total = n_distinct(incident_key), .groups = "drop")
+
+#--------------------------------------
+# LINE CHART
+#--------------------------------------
+ggplot(borough_year_stats, aes(x = year, y = incident_total, colour = boro)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  labs(
+    title = "NYC Shooting Incidents by Borough Over Time (2006–2024)",
+    x = "Year",
+    y = "No. of Incidents",
+    colour = "Borough"
+  ) +
+  theme_minimal()
+
+
+#--------------------------------------
+# TOP 5 PRECINCTS (19-YEAR TOTALS)
+#--------------------------------------
+top5_precincts <- shootings_processed %>%
+  group_by(precinct) %>%
+  summarise(
+    incident_total = n_distinct(incident_key),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(incident_total)) %>%
+  slice_head(n = 5)
+
+#--------------------------------------
+# TOP 5 PRECINCTS × YEAR
+#--------------------------------------
+precinct_year_stats <- shootings_processed %>%
+  mutate(
+    occur_date = ymd(occur_date),
+    year = year(occur_date)
+  ) %>%
+  filter(precinct %in% top5_precincts$precinct) %>%
+  group_by(precinct, year) %>%
+  summarise(
+    incident_total = n_distinct(incident_key),
+    .groups = "drop"
+  )
+
+#--------------------------------------
+# LINE CHART
+#--------------------------------------
+ggplot(
+  precinct_year_stats,
+  aes(x = year, y = incident_total, colour = factor(precinct))
+) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  labs(
+    title = "Shooting Incidents in the Top 5 NYC Precincts (2006–2024)",
+    x = "Year",
+    y = "No. of Incidents",
+    colour = "Precinct"
+  ) +
+  theme_minimal()
+
+```
+
+*The above line chart shows a dramatic increase in recorded shootings that occurred in precincts 44, 73, 75 in the year 2020. This finding warrants a closer examination:*
+
+> The output below shows shooting incidents in Precincts 44 and 75 hit new historical highs in the year 2020, while Precinct 73 saw numbers return to its historical high of 96, last recorded in 2007. The significant increase in shooting incidents recorded in 2020 happens to coincide with the onset of the COVID19 pandemic. This pattern was not unique to New York City. Similar increases in gun violence were observed in several other major U.S. cities during the pandemic (*Hall et al., 2025).*
+
+```{r new historical highs? precincts 73 and 75}
+precinct_year_stats %>%
+  filter(precinct %in% c(44, 73, 75)) %>%
+  group_by(precinct) %>%
+  slice_max(incident_total, n = 2, with_ties = FALSE) %>%
+  select(precinct, year, incident_total) %>%
+  arrange(precinct, desc(incident_total))
+
+
+```
+
+### Step 3.3: Hotspot Identification
+
+Latitude and longitudinal data will be used to map the shootings using a **heatmap**.
+
+- Areas with the highest concentration of shootings appear dark red
+
+- Areas with the lowest concentration of shootings appear pale yellow.
+
+- Borough boundaries are outlined in black
+
+- Top five precinct boundaries are marked in blue and labeled
+
+```{r Create GIS heatmap}
+library(sf)
+library(tigris)
+options(tigris_use_cache = TRUE)
+
+nyc_boroughs <- counties(
+  state = "NY",
+  cb = TRUE
+) %>%
+  filter(NAME %in% c(
+    "Bronx",
+    "Kings",
+    "New York",
+    "Queens",
+    "Richmond"
+  )) %>%
+  mutate(
+    borough = recode(
+      NAME,
+      "Kings" = "Brooklyn",
+      "New York" = "Manhattan",
+      "Richmond" = "Staten Island"
+    )
+  )
+
+nyc_precincts <- st_read(
+  "https://data.cityofnewyork.us/api/v3/views/y76i-bdw7/query.geojson?accessType=DOWNLOAD"
+)
+
+top5_precincts_sf <- nyc_precincts %>%
+  filter(precinct %in% top5_precincts$precinct)
+
+shootings_sf <- st_as_sf(
+  shootings_processed,
+  coords = c("longitude", "latitude"),
+  crs = 4326
+  
+)
+
+ggplot() +
+  geom_bin_2d(
+    data = shootings_processed,
+    aes(x = longitude, y = latitude)
+  ) +
+  
+  geom_sf(
+    data = nyc_boroughs,
+    fill = NA,
+    color = "black"
+  ) +
+  
+  geom_sf(
+    data = top5_precincts_sf,
+    fill = NA,
+    color = "lightblue",
+    linewidth = 0.5
+  ) +
+  
+  geom_sf_text(
+    data = nyc_boroughs,
+    aes(label = borough),
+    size = 4,
+    nudge_x = 0.01,
+    nudge_y = -0.03
+  ) +
+  
+  geom_sf_label(
+    data = top5_precincts_sf,
+    aes(label = precinct),
+    size = 2,
+    color = "blue",
+    fill = "lightblue",
+    alpha = 0.2
+  ) +
+  
+  scale_fill_gradient(
+    low = "lightyellow",
+    high = "darkred"
+  ) +
+  
+  coord_sf() +
+  labs(
+    title = "Geographic Distribution of NYC Shooting Incidents (2006–2024)",
+    x = "Longitude",
+    y = "Latitude",
+    fill = "Incidents"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+------------------------------------------------------------------------
+
+# 4. Key Findings (Conclusion)
+
+#### Overall Trend
+
+> The number of shooting incidents in NYC have been on a steady, downward trend since 2006. There was a break from the general pattern in 2020, but the downward trend resumed in 2023. Overall, NYC has seen a markedly decline in the number of recorded shootings over the study period of 19 years.  
+
+#### Top Precinct Results
+
+> A notable observation made on the distribution patterns of the top 5 precincts over the years, is the sharp increase in shooting incidents in 2020 in precincts 44, 73, and 75. Precinct 73 climbed back up to its historical high of 96 incidents (last observed in year 2007), whilst precinct 75 reached a new historical high of 102 incidents in 2020, beating its last record of 94 incidents in year 2007. Likewise, Precinct 44 saw its numbers shoot up to 70, surpassing its previous high of 59 in 2006.  
+
+#### Heatmap Results
+
+> The heatmap gives us an idea of the concentration of shootings in different areas of NYC. The raw totals by borough and precinct do not account for difference in geographical size, so a high count may be diluted across a large area. By analysing the heatmap together with precinct counts, we get to see a more complete picture of the distribution of recorded shooting incidents in NYC.  
+>
+>For example, in Brooklyn. where 4 of the top 5 precincts are located, the colour of the squares suggests that the high number of incidents, although high, is spread out over the eastern half of Brooklyn, with Precinct 75 bordering Queens. <br> Precinct 44, located in the Bronx, aligns well with the heatmap results - within the top 5 most recorded number of incidents, and situated over a dark red area. <br> And, while Manhattan is ranked number 4 out of 5 in terms of absolute number of recorded shootings, you can see, among the mostly pale yellow squares of Manhattan, isolated red squares up north. This is suggestive of a high concentration of shootings in the area that is geographically close to Precinct 44.
+
+------------------------------------------------------------------------
+
+# 5. Statistical Modeling
+
+To describe the overall direction (upward or downward trend) of shooting incidents from 2006 to 2024, we will model the annual trend using the linear model:
+
+$Y =
+\beta_{\theta} + \beta_1(\text{Year}) + \epsilon$\
+
+|  |  |
+|------------------------------------|------------------------------------|
+| $Y$ | **Observed Counts** (in a given year) |
+| $X$ | **Year** (2006 to 2024) |
+| $\beta_0$ | **Intercept** (the model's estimated number of incidents when $X=0$) |
+| $\beta_1$ | **Slope** (the estimated change in annual shooting incidents for each additional year) |
+| $\epsilon$ | **Residual/error** (the difference between the observed annual count and the count estimated by the linear model) |
+
+```{r create modeling table}
+annual_stats <- shootings_processed %>%
+  mutate(year = lubridate::year(occur_date)) %>%
+  group_by(year) %>%
+  summarise(
+    incident_total = n_distinct(incident_key),
+    .groups = "drop"
+  )
+
+annual_model <- lm(
+  incident_total ~ year,
+  data = annual_stats
+)
+
+ggplot(annual_stats, aes(x = year, y = incident_total)) +
+  geom_point() +
+  geom_smooth(
+    method = "lm",
+    se = TRUE
+  ) +
+  labs(
+    title = "Annual NYC Shooting Incidents and Linear Trend",
+    x = "Year",
+    y = "Number of Incidents"
+  ) +
+  theme_minimal()
+```
+
+#### Descriptive Statistical Model Interpretation
+
+The model shows a downward trend, which the observed data follows except in the years 2020-2022, which are the years coinciding with the COVID-19 pandemic. We also see the downward trend resuming from 2023, when WHO declared that COVID-19 no longer constituted a global health emergency. It is important to note that while the data shows the trend in the number of shootings, it does not tell us any possible causes or reasons for the trend in numbers.
+
+------------------------------------------------------------------------
+
+# 6. Bias 
+
+#### **Personal Bias**
+
+> As I am not a U.S. citizen, neither have I ever lived in the U.S., nor ever visited NYC, I did not have any firsthand knowledge on where shooting hotspots may be. However, because of my lack of knowledge on NYC, its population, and the socioeconomic characteristics of each precinct or borough, I focused the analysis on the top five precincts with highest raw incident counts, without taking into account per-capita rates. To mitigate the bias in my approach, I refrained from commenting on how dangerous a neighbourhood or area may be in NYC.  
+
+
+#### **Geographic Aggregation Bias**
+
+> The spatial analysis was conducted at the borough and precinct level and incident counts were aggregated by combining all 19 years of data (year on year variations are not reflected in the analysis). This assumes that geospatial patterns have remained stable over the years.
+>
+> While incident counts in larger boroughs are generally higher than in smaller boroughs, we must interpret the counts with caution because the distribution of incidents does not account for differences in land area or population. As a result, higher incident counts do not necessarily indicate a higher *rate* of shootings relative to the size or population of the borough.  
+  
+  
+#### **Data Collection Bias**
+
+> This historical dataset relies on incidents reported to and recorded by the NYPD. There may be shootings that went unreported, human error during data entry or compilation, as well as inconsistencies in how incidents are recorded across different precincts. To mitigate errors, the official NYPD historical 19 year records were downloaded from source, and several data integrity and validation checks were also performed before the start of the analysis.  
+
+------------------------------------------------------------------------
+
+## References
+
+Hall, C., Wilson, N., & Piquero, A. R. (2025). Gun violence trends in US cities during the early phase of the COVID-19 pandemic. *JAMA Network Open, 8*(1), e2454760. <https://doi.org/10.1001/jamanetworkopen.2024.54760>
+
+------------------------------------------------------------------------
+
+## AI Usage Documentation
+
+OpenAI. (2026). *ChatGPT* [Large language model].  
+Used to check sentence structure, clarify statistical concepts, and assist with data visualisation function arguments as well as debugging R code during the development of this project.
