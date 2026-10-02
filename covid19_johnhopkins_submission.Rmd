@@ -1,0 +1,616 @@
+---
+title: "The Latecomer's Advantage?"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(lubridate)
+library(countrycode)
+library(knitr)
+```
+
+# A Cross-Country Analysis of COVID-19 Arrival Timing and Initial Growth Rates
+
+------------------------------------------------------------------------
+
+## Research Question
+
+> ### Did countries experiencing COVID-19 later have slower initial growth rates in confirmed cases?
+
+What was a country's growth rate of confirmed COVID infections during the first 45 days after COVID was first reported in that country, and how did growth rates vary across countries?
+
+I want to explore the intuition that countries that experienced COVID later had a "latecomer's advantage" in the sense that they had more time to prepare, access to COVID data from other countries, and may also have proactively adopted containment measures such as tighter border controls, restrictions on travel and public awareness campaigns.
+
+A descriptive model is used to describe the relationship between how late a country's first case arrived and how fast its case count grew afterward. A negative slope would be consistent with a "latecomer's advantage", but it cannot confirm one. And even if some genuine advantage exists, the descriptive model in this analysis cannot isolate the cause/mechanism (preparation, surveillance, border controls, etc.) is responsible.
+
+The descriptive model can, however, lead us to conduct further analyses on the possibility of a latecomer's advantage hypothesis if it display a negative slope.
+
+------------------------------------------------------------------------
+
+## **Scope of Analysis**
+
+**How The Data Will Support the Project**
+
+The Johns Hopkins Global Time Series COVID-19 dataset contains information on confirmed cases of COVID-19 infections including date, country/region, province/state, and accumulated case totals. Per-capita rates will be used, based on a supplementary dataset containing country population data, also from Johns Hopkins University.
+
+The data will be transformed and aggregated as required by the analysis. For example, some countries are reported at the province/state level so cases will need to be aggregated by country when analysing with a country's total count.
+
+Variables will be selected based on their relevance to the research question and the completeness and validity of the variables will also be considered.
+
+### **Project Road Map**
+
+1.  Importing, validating and processing data:
+    - Understand the datasets (what information do we have to work with, data types and completeness)
+    - Perform data validation and cleaning (duplicate checks, invalid dates and countries, missing data)
+    - Process dataset for analysis
+2.  Initial growth rate exploratory data analysis:
+    - Define variables for the modeling table
+    - Exploratory Data Analysis: Overview / Summary Statistics + Data Visualisations
+3.  Linear Regression Model:
+    - A simple descriptive model (not inferential, which is outside the scope of this analysis) to describe the trend in the average daily growth rate of confirmed cases over the first 45 days since the first confirmed case.
+4.  Spatial Analysis:
+    - Geographical visualisation of the initial growth rates by continent and country
+5.  Conclusion:
+    - And finally, the project will conclude with a summary of the main findings, potential sources of bias, references and citations.
+
+------------------------------------------------------------------------
+
+## More About The Data
+
+This project uses the dataset **time_series_confirmed_global.csv** from **Johns Hopkins Time Series Summary (csse_covid_19_time_series)**. It is a public dataset available on Github.
+
+**COVID Dataset download link:** <https://github.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv>
+
+**Country Population Dataset download link:** <https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv>
+
+**More details** can be found here: <https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series>
+
+------------------------------------------------------------------------
+
+# Step 1: Import, Validate, and Process The Dataset
+
+### 1.1 Import and Inspect Data
+
+The JHU CSSE COVID-19 global confirmed cases time series is imported directly from GitHub. A quick inspection of the dataset confirms it was imported successfully and suggests:
+
+- The data is in wide format, with 1147 columns and 289 rows.
+
+- Each row is a place (country, and in some cases a province/state within a country).
+
+- Each column after the fourth column is a date, with cumulative confirmed case counts.
+
+```{r load_data,warning=FALSE}
+#import dataset from gituhub 
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+
+covid19 <- read_csv(url_in)
+
+# perform a quick inspection of dataset properties
+dim(covid19)
+head(covid19)
+```
+
+The first four columns are `Province/State`, `Country/Region`, `Lat`, `Long`. Every column after that is a date in `M/D/YY` format, containing cumulative confirmed case counts for that place as of that date.
+
+------------------------------------------------------------------------
+
+### 1.2 Pivot Data To Long & Check Data Types
+
+We start by pivoting the dataset to long format, and converting dates to a date object.
+
+```{r pivot dataset to long format}
+
+covid19_long <- covid19 %>%
+  pivot_longer(
+    cols = -(1:4), #pivot all columns except first 4 columns (first 4 = Province/State, Country/Region, Lat, Long)
+    names_to = "date",
+    values_to = "cases"
+  ) %>%
+  
+  #standardise column names to lowercase_snake_case
+  rename(province_state = "Province/State", country_region = "Country/Region", lat="Lat", lon ="Long")
+
+  
+head(covid19_long)
+
+```
+
+```{r convert date data type}
+
+covid19_long <- covid19_long %>%
+  
+  #convert date column from character to date object
+  mutate(date=mdy(date))
+
+```
+
+### 1.3 Validate, Clean & Process Dataset
+
+**Checks performed:**
+
+- Duplicate rows (same province/state + country/region + date)
+- Missing or invalid dates
+- Non-country entries (cruise ships, event codes) in `country_region` or `province_state`
+- Negative or decreasing cumulative counts
+
+```{r data validation}
+
+#Summary statistics
+summary_stats <- covid19_long %>%
+  summarise(
+    max = max(cases),
+    min = min(cases),
+    range = max - min,
+    mean = mean(cases),
+    median = median(cases),
+    total_days = length(unique(date)),
+    total_countries = length(unique(country_region))
+  )
+
+cat("SUMMARY STATISTICS\n")
+cat("Total no. of days: ", summary_stats$total_days, " days\n")
+cat("Total no. of countries: ", summary_stats$total_countries, " countries\n\n")
+
+print(summary_stats)
+
+#check for duplicates
+cat("\nDUPLICATES CHECK\n")
+cat("No. of duplicate records: ", sum(duplicated(covid19_long)))
+
+#check for missing values
+cat("\nMISSING VALUES CHECK\n")
+colSums(is.na(covid19_long))
+
+#check for negative counts
+cat("NEGATIVE VALUES CHECK\n")
+cat("No. of negative case counts: ", sum(covid19_long$cases < 0, na.rm = TRUE))
+
+```
+
+####　⚠️ All distinct `country_region` values were checked manually, and a few non-country names were found. These values were dropped from the dataset.
+
+1.  Dropped rows were saved for documentation and future reference in the table `removed_rows`
+
+2.  Dropped rows are excluded from all country totals. A check confirms that kept and removed rows add up to the original dataset.
+
+Non-country / non-place entries found:
+
+| Column Name | Invalid entries |
+|------------------------------------|------------------------------------|
+| `country_region` | `Summer Olympics 2020`, `Winter Olympics 2022`, `Diamond Princess`, `MS Zaandam` |
+| `province_state` | `Diamond Princess` (`country_region = Canada`) , `Grand Princess` (`country_region = Canada`), `Repatriated Travellers` (`country_region = Canada`) |
+
+```{r data cleaning}
+
+# non-country records to drop
+non_countries <- c("Summer Olympics 2020", "Winter Olympics 2022", "MS Zaandam", "Diamond Princess")
+non_provinces <- c("Diamond Princess", "Grand Princess", "Repatriated Travellers")  # all listed under Canada
+
+# keep a record of everything removed
+removed_rows <- covid19_long %>%
+  filter(country_region %in% non_countries | province_state %in% non_provinces)
+
+# count and percentage of non-country records
+drop_rows  <- nrow(removed_rows)
+percentage <- round(drop_rows / nrow(covid19_long) * 100, 2)
+
+cat("\nNo. & percentage rows dropped\n")
+cat("Drop rows:", drop_rows, " rows dropped (", percentage, "% of dataset)\n")
+
+# remove non-countries
+n_before <- nrow(covid19_long)
+covid19_long <- covid19_long %>%
+  filter(!country_region %in% non_countries,
+         !province_state %in% non_provinces)
+
+# Double check if kept rows + removed rows = original rows
+stopifnot(nrow(covid19_long) + nrow(removed_rows) == n_before)
+
+# check cumulative cases never decrease
+decreases <- covid19_long %>%
+  group_by(country_region, province_state) %>%
+  arrange(date, .by_group = TRUE) %>%
+  filter(cases < lag(cases))
+
+cat("Days where cumulative cases decreased:", nrow(decreases), "\n")
+
+# Recalculate summary statistics AFTER cleaning up dataset
+summary_stats <- covid19_long %>%
+  summarise(
+    max = max(cases),
+    min = min(cases),
+    range = max - min,
+    mean = mean(cases),
+    median = median(cases),
+    total_days = length(unique(date)),
+    total_countries = length(unique(country_region))
+  )
+
+cat("SUMMARY STATISTICS AFTER CLEANING\n")
+cat("Total no. of days: ", summary_stats$total_days, " days\n")
+cat("Total no. of countries: ", summary_stats$total_countries, " countries\n\n")
+
+print(summary_stats)
+
+```
+
+361 day-to-day decreases were found in the province/country-level. They were left unchanged.
+
+------------------------------------------------------------------------
+
+# Step 2: Define Variables
+
+Let's start with defining the variables that make up the modeling table. The table will have one row for every country. The data required for each country are:
+
+| Column/Variable Name | Description |
+|------------------------------------|------------------------------------|
+| `first_case` | The first case date = the earliest date on which cumulative confirmed cases exceed zero, per country. |
+| `growth_window` | The 45 day window used to study initial growth. Starts on the first case date and ends on the 44th day (day 0 through day 44). |
+| `day_since_first_case` | A relative time index (0–44) aligning each country on a common timeline, regardless of when COVID-19 actually arrived there. |
+| `cases_day1` | Cumulative confirmed cases on day 0 of the growth window (the first case date). |
+| `cases_day45` | Cumulative confirmed cases on day 44 of the growth window. |
+| `growth_rate_45day` | Overall growth ratio across the 45 day window $\quad \frac{casesday45}{casesday1}$. |
+| `avg_daily_growth_rate` | Compound daily growth rate over the window, used to compare countries with different case scales.  $\quad rate=(\frac{cases day 45}{cases day 1})^\frac1{44}-1$|
+| `doubling_time_days` | Number of days it would take cases to double, derived from `avg_daily_growth_rate`. Set to NA for zero growth cases. |
+| `days_since_global_first_case` | The country's first case date, converted to a numeric predictor — days elapsed since the globally earliest first case date across all countries. |
+| `continent` | Continent/region grouping, used for spatial analysis and to check for regional patterns. |
+| `population` | Country population, merged from a supplementary dataset, used to compute per-capita measures. |
+| `cases_per_100k` | Cumulative confirmed cases per 100,000 population at day 45, a population-adjusted growth measure. |
+
+------------------------------------------------------------------------
+
+### 2.1 Aggregate Cases To Country Level
+
+Some countries reported cases at the province/state level (e.g. Canada, China), so the cases across that country's provinces/states need to be summed before we can find a single "first case date" and growth trajectory for every country.
+
+```{r aggregate to country level}
+
+covid19_country <- covid19_long %>%
+  group_by(country_region, date) %>%
+  summarise(cases = sum(cases, na.rm = TRUE)) %>%
+  ungroup()
+
+head(covid19_country)
+
+```
+
+### 2.2 Find Each Country's First Case Date
+
+```{r first case date}
+
+first_case <- covid19_country %>%
+  filter(cases > 0) %>%
+  group_by(country_region) %>%
+  summarise(first_case = min(date)) %>%
+  ungroup()
+
+head(first_case)
+
+```
+
+### 2.3 Build the 45 day Growth Window
+
+For each country, keep only the 45 days starting on `first_case` (day 0) through day 44.
+
+```{r growth window}
+
+growth_window <- covid19_country %>%
+  inner_join(first_case, by = "country_region") %>%
+  filter(date >= first_case, date <= first_case + 44) %>%
+  mutate(day_since_first_case = as.numeric(date - first_case))
+
+head(growth_window)
+
+```
+
+#### ⚠️ Countries near the end of the dataset's date range may not have a full 45 days of data yet. These countries are dropped, since `avg_daily_growth_rate` and `doubling_time_days` can't be reliably computed for a partial window.
+
+```{r check window completeness}
+
+days_per_country <- growth_window %>%
+  count(country_region, name = "n_days")
+
+incomplete <- days_per_country %>%
+  filter(n_days < 45)
+
+cat("Countries with an incomplete 45 day window:", nrow(incomplete), "\n")
+print(incomplete)
+
+# drop countries without a full 45 day window
+growth_window <- growth_window %>%
+  filter(!country_region %in% incomplete$country_region)
+
+```
+
+### 2.4 Build the Modeling Table
+
+- One row per country
+
+- `cases_day1`, `cases_day45`, `growth_rate_45day`, `avg_daily_growth_rate` and `doubling_time_days` derived from the growth window.
+
+- `doubling_time_days` is set to NA for countries with zero `avg_daily_growth_rate`since a doubling time is undefined when case counts do not increase
+
+```{r modeling table}
+
+model_table <- growth_window %>%
+  group_by(country_region) %>%
+  summarise(
+    first_case = first(first_case),
+    cases_day1 = cases[day_since_first_case == 0],
+    cases_day45 = cases[day_since_first_case == 44],
+    growth_rate_45day = cases_day45 / cases_day1,
+    avg_daily_growth_rate = growth_rate_45day^(1 / 44) - 1,
+    doubling_time_days = ifelse(avg_daily_growth_rate > 0, log(2) / log(1 + avg_daily_growth_rate), NA)
+  ) %>%
+  ungroup()
+
+# global first case datw = reference point for days_since_global_first_case
+global_first_case <- min(model_table$first_case)
+
+model_table <- model_table %>%
+  mutate(days_since_global_first_case = as.numeric(first_case - global_first_case))
+
+head(model_table)
+
+```
+
+### 2.5 Add Continent For Continent-level Analysis
+
+⚠️ Two `country_region` entries could not match two `countrycodes`: \*\*Kosovo\*\* and \*\*Micronesia\*\*. These two were assigned manually using the `custom_match` argument in the code block below.
+
+```{r add continent}
+
+model_table <- model_table %>%
+  mutate(
+    continent = countrycode(
+      country_region, 
+      origin = "country.name", 
+      destination = "continent", 
+      custom_match = c("Kosovo" = "Europe", "Micronesia" = "Oceania")
+      )
+  )
+
+cat("Countries with no continent match:", sum(is.na(model_table$continent)), "\n")
+model_table %>% filter(is.na(continent)) %>% select(country_region)
+
+```
+
+### 2.6 Add Population & Per-Capita Cases
+
+The supplementary population dataset reports at province/state level for some countries, so only the country-level total rows (where `Province_State` is blank) are kept.
+
+```{r load population data}
+
+pop_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+population <- read_csv(pop_url)
+
+population_country <- population %>%
+  filter(is.na(Province_State)) %>%
+  select(country_region = Country_Region, population = Population)
+
+head(population_country)
+
+```
+
+```{r merge population}
+
+model_table <- model_table %>%
+  left_join(population_country, by = "country_region") %>%
+  mutate(cases_per_100k = (cases_day45 / population) * 100000)
+
+cat("Countries missing population data:", sum(is.na(model_table$population)), "\n")
+model_table %>% filter(is.na(population)) %>% select(country_region)
+
+head(model_table)
+
+```
+
+------------------------------------------------------------------------
+
+# Step 3: Exploratory Data Analysis
+
+```{r eda summary}
+
+eda_summary <- model_table %>%
+  summarise(
+    n_countries = n(),
+    zero_growth_countries = sum(avg_daily_growth_rate == 0),
+    zero_growth_list = paste(country_region[avg_daily_growth_rate == 0], collapse = " ; "),
+    mean_growth_rate = mean(avg_daily_growth_rate, na.rm = TRUE),
+    median_growth_rate = median(avg_daily_growth_rate, na.rm = TRUE),
+    mean_doubling_time = mean(doubling_time_days, na.rm = TRUE),
+    median_doubling_time = median(doubling_time_days, na.rm = TRUE),
+    median_days_to_arrival = median(days_since_global_first_case, na.rm = TRUE)
+  )
+
+cat("EDA SUMMARY STATISTICS\n")
+cat("Total Countries: ", eda_summary$n_countries, "countries\n")
+cat("Zero Average Growth Countries: ", eda_summary$zero_growth_countries, "countries\n")
+cat("Zero Average Growth Country List: ", eda_summary$zero_growth_list, "\n")
+cat("Mean Growth Rate: ", round(eda_summary$mean_growth_rate * 100, 2), "% per day\n")
+cat("Median Growth Rate: ", round(eda_summary$median_growth_rate * 100, 2), "% per day\n")
+cat("Mean Doubling Time: ", round(eda_summary$mean_doubling_time, 2), "days\n")
+cat("Median Doubling Time: ", round(eda_summary$median_doubling_time,2), "days\n")
+
+
+# CReate the scatter plot, countries color coded by continent
+ggplot(model_table, aes(x = days_since_global_first_case, y = avg_daily_growth_rate)) +
+  geom_point(aes(color = continent), alpha = 0.6) +
+  labs(
+    title = "Initial Growth Rate vs. Arrival Timing",
+    x = "Days Since Global First Case",
+    y = "Average Daily Growth Rate (first 45 days)",
+    color = "Continent"
+  )
+```
+
+197 Countries with a mean growth rate of 13% per day in their 45 day window. Europe And Asia were among the earliest to record their first confirmed cases.
+
+------------------------------------------------------------------------
+
+# Step 4: Descriptive Linear Regression Model
+
+A simple descriptive (not inferential) linear regression model is used to describe the trend between how late a country's first case arrived and its average daily growth rate over the following 45 days.
+
+Two models were created: One including the countries with average zero growth rates and another excluding those countries.
+
+#### Model 1: All Countries
+
+```{r linear model}
+
+growth_model <- lm(avg_daily_growth_rate ~ days_since_global_first_case, data = model_table)
+
+summary(growth_model)
+
+ggplot(model_table, aes(x = days_since_global_first_case, y = avg_daily_growth_rate)) +
+  geom_point(aes(color = continent), alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(
+    title = "Model 1: All Countries",
+    x = "Days Since Global First Case",
+    y = "Average Daily Growth Rate (first 45 days)",
+    color = "Continent"
+  )
+
+```
+
+> The first model which includes all countries shows a negative slope (`days_since_global_first_case estimate -2.215e-04`) and an average daily growth rate of 14.61% for a country that reported its first case from the start of the pandemic (`intercept estimate = 1.461e-01`)
+
+#### Model 2: Excluding Zero-Growth Countries
+
+```{r model without zero growth rate countries}
+
+growth_model_no_zero <- lm(avg_daily_growth_rate ~ days_since_global_first_case,
+                           data = model_table %>% filter(avg_daily_growth_rate > 0))
+summary(growth_model_no_zero)
+
+model_table %>%
+  filter(avg_daily_growth_rate > 0) %>%
+  ggplot(aes(x = days_since_global_first_case, y = avg_daily_growth_rate)) +
+  geom_point(aes(color = continent), alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(
+    title = "Model 2: Excluding Zero-Growth Countries",
+    x = "Days Since Global First Case",
+    y = "Average Daily Growth Rate (first 45 days)",
+    color = "Continent"
+  )
+
+```
+
+> The model still returns a negative slope, so the overall pattern does not depend on countries with zero growth rates (`days_since_global_first_case estimate = -2.507e-04$`). However, now, the model only explains about 12% of the variation in the initial growth rates between the countries ($R^2=0.1215$).
+
+------------------------------------------------------------------------
+
+# Step 5: Spatial Analysis By Continent
+
+```{r continent summary and boxplot}
+
+# Summary
+continent_summary <- model_table %>%
+  filter(!is.na(continent)) %>%
+  group_by(continent) %>%
+  summarise(
+    n_countries = n(),
+    mean_growth_rate = mean(avg_daily_growth_rate, na.rm = TRUE),
+    median_growth_rate = median(avg_daily_growth_rate, na.rm = TRUE),
+    mean_days_since_global_first_case = mean(days_since_global_first_case, na.rm = TRUE)
+  ) %>%
+  arrange(desc(median_growth_rate))
+
+print(continent_summary)
+
+#Box plot
+model_table %>%
+  filter(!is.na(continent)) %>%
+  ggplot(aes(x = reorder(continent, avg_daily_growth_rate, median), y = avg_daily_growth_rate)) +
+  geom_boxplot() +
+  # median (to the right of each box)
+  stat_summary(fun = median, geom = "text", aes(label = round(after_stat(y), 3)),
+               vjust = -1.5, size = 3) +
+  # max (above the top of each continent's data)
+  stat_summary(fun = max, geom = "text", aes(label = round(after_stat(y), 3)),
+               vjust = -0.6, size = 3) +
+  # min (below the bottom of each continent's data)
+  stat_summary(fun = min, geom = "text", aes(label = round(after_stat(y), 3)),
+               vjust = 1.6, size = 3) +
+  scale_x_discrete(expand = expansion(add = c(0.6, 1))) +
+  labs(
+    title = "Average Daily Growth Rate By Continent",
+    x = "Continent",
+    y = "Average Daily Growth Rate (first 45 days)"
+  )
+
+```
+
+> We compare medians, rather than means, because of outliers, plus, skewness pulls the mean but median will not be affected by it. Europe has the greatest median growth rate (0.179), while Oceania has the lowest (0.016). Africa, Asia, and the Americas sit in the middle and their medians are somewhat similar.
+
+#### Antarctica appears with a growth rate of 0.
+
+The check below identifies the entry.
+
+```{r check antarctica}
+
+model_table %>%
+  filter(continent == "Antarctica") %>%
+  select(country_region, avg_daily_growth_rate)
+
+```
+
+------------------------------------------------------------------------
+
+# Step 6: Conclusion
+
+A summary of the key findings is as follows:
+
+### 6.1 Country-Level Findings
+
+The findings from `Linear Regression Model 1` will be used to answer the research question. The countries with zero growth are real observations and model 1 includes all 197 countries which is needed to answer the question.Model 2, which excludes the seven zero-growth countries, is used to check model sensitivityx. It showed the same downward trend (slightly steeper), so the overall pattern does not depend on them.
+
+The regression of `avg_daily_growth_rate` on `days_since_global_first_case` is consistent with the "latecomer's advantage" intuition: the slope is negative (`estimate = -2.215e-04`).
+
+A country that had its first case at the very start of the pandemic (`days_since_global_first_case = 0`) is predicted to have an average daily growth rate of about 14.6% over its first 45 days (`intercept = 1.461e-01`).
+
+> **Countries that reported their first case later tended to have lower average daily growth rates. For every 100-day delay, the growth rate was about 2.2 percentage points lower.**
+
+The model accounts for about 21% of the differences between countries while the remaining 79% is likely due to other factors such as population density and/or containment measures etc ($R^2=0.2128$).
+
+### 6.2 Continent-Level Findings
+
+The continent-level boxplot is consistent with the regression
+
+Europe (mostly early arrivals, low `days_since_global_first_case`) has the highest median growth rate (~18% per day), while Oceania (mostly later arrivals) has one of the lowest (~2% per day, aside from one outlier). 
+
+Africa, Asia and the Americas have very similar medians (~13% per day) and their boxes overlap. Africa's box lies entirely within the range of the other two, so arrival timing alone does not cleanly separate them. This is consistent with the model explaining only about 21% of the variation in growth rates.
+
+Antarctica appears as a single value of 0 (`cases_day1` equal to `cases_day45`). Its counts are very small, so its growth rate reflects minimal case counts more than transmission. And because its first case arrived very late, it is also a potentially high-leverage point in the regression.
+
+------------------------------------------------------------------------
+
+# Step 7: Sources of Bias
+
+1. **Testing capacity & reporting**   
+Confirmed cases depend heavily on how much testing a country was doing and how consistently it reported the results. 
+
+2. **Latecomers had more warning**  
+Countries with a later first case had the advantage of observing other countries' outbreaks and could adopt containment measures pre-emptively, which is the effect this analysis is trying to isolate, but it's also confounded with other national differences (e.g. wealth and healthcare capacity).
+
+3. **Demographic and geographic differences**  
+`cases_per_100k` adjusts for population size but not density, urbanization, age, or connectivity (e.g. international connectivity), all of which affect how fast a disease spreads.
+
+4. **Missing / dropped countries**  
+Countries with an incomplete 45 day window (too close to the end of the dataset) were dropped, and countries with no `countrycode` continent match or no population match were excluded from parts of the analysis.These countries may not be a random set of countries.
+
+5. **Province/state aggregation**  
+Adding regional cases to get a country total assumes consistent reporting across regions and over time, which may not be the case. |
+
+6. **Data source limitations**  
+The JHU dataset reflects cumulative *confirmed* cases only and may not capture all infections or deaths related to the pandemic.
+
+## AI Usage Documentation
+
+OpenAI. (2026). *ChatGPT* [Large language model]. Used to check sentence structure, clarify statistical model report, and assist with data visualisation function arguments as well as debugging R code during the development of this project.
